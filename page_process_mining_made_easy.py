@@ -16,6 +16,11 @@ import pm4py
 
 st.set_page_config(page_title="Process Mining made easy", page_icon="⛏️", layout="wide")
 st.title("Process Mining made easy")
+st.markdown("""
+        This application enables analysis of process data from Excel files.  
+        With minimal effort, you can obtain process statistics and visualize your workflows.  
+        Ideal for beginners in process mining, this tool simplifies your initial steps.
+        """)
 
 TEMPORARY_FILES_FOLDER_NAME = "tempfilesProcessMiningSimple"
 if not os.path.exists(TEMPORARY_FILES_FOLDER_NAME): #create folder if not exists
@@ -84,11 +89,68 @@ def load_event_log_from_dataframe(df, case_column, activity_column, timestamp_co
         new_log = pm4py.format_dataframe(df_new, case_id=case_column, activity_key=activity_column, timestamp_key=timestamp_column)
     return new_log
 
+@st.cache_data
+def calculate_statistics_from_event_log(the_log):
+    #get all case durations and write some basic statistics
+    log_case_durations = pm4py.get_all_case_durations(log)
+    log_case_durations = np.array(log_case_durations)
+
+    log_variants = pm4py.get_variants(log)
+    log_variants = dict(sorted(log_variants.items(), key=lambda item: item[1], reverse=True)) #sort dictionary by value in descending order, to ensure that list_of_variants is in descending order
+    list_of_variants = list(log_variants.keys())
+
+    # st.text(f"""
+    #         The dataset contains {len(log_case_durations)} cases with an average case duration of {make_text_from_seconds(np.mean(log_case_durations))}.  
+    #         There are {len(log_variants)} different variants in the dataset.
+    #         """)
+
+    #create dataframe with main kpis
+    df_kpis = pd.DataFrame(
+        {
+            '# of cases': [len(log_case_durations)],
+            'mean duration': [make_text_from_seconds(np.mean(log_case_durations))],
+            'median duration': [make_text_from_seconds(np.median(log_case_durations))],
+            'minimum duration': [make_text_from_seconds(np.min(log_case_durations))],
+            'maximum duration': [make_text_from_seconds(np.max(log_case_durations))],
+            'stdev duration': [make_text_from_seconds(np.std(log_case_durations))]
+        }
+    )
+    # st.dataframe(df_kpis, hide_index=True)
+
+    #find number of variants
+    # st.subheader("Variant details")
+
+    #change log variants dictionary, value should be dictionary with '# of cases' as key and old value as value
+    log_variants = {k: {"# of cases": v} for k, v in log_variants.items()}
+
+    #add all the other kpis to the dictionary
+    for variant, kpis in log_variants.items():
+        filtered_log = pm4py.filter_variants(log, [variant])
+        filtered_log_case_durations = pm4py.get_all_case_durations(filtered_log)
+        filtered_log_case_durations = np.array(filtered_log_case_durations)
+        kpis["mean duration"] = make_text_from_seconds(np.mean(filtered_log_case_durations))
+        kpis["median duration"] = make_text_from_seconds(np.median(filtered_log_case_durations))
+        kpis["min duration"] = make_text_from_seconds(np.min(filtered_log_case_durations))
+        kpis["max duration"] = make_text_from_seconds(np.max(filtered_log_case_durations))
+        kpis["stdev duration"] = make_text_from_seconds(np.std(filtered_log_case_durations))
+
+    #create new dict from log_variants, key is joined with ., value is same
+    log_variants_new = {('.'.join(k)): v for k, v in log_variants.items()}
+
+    df_variants = pd.DataFrame.from_dict(log_variants_new, orient='index', columns=['# of cases', 'mean duration', 'median duration', 'min duration', 'max duration', 'stdev duration'])
+    df_variants = df_variants.reset_index().rename(columns={'index': 'variant'})
+    df_variants = df_variants.sort_values(by='# of cases', ascending=False)
+    # st.dataframe(df_variants, hide_index=True)
+
+    return log_case_durations, log_variants, list_of_variants, df_kpis, df_variants
+
 def make_text_from_seconds(seconds):
     '''
     Converts seconds to a string with time in seconds, minutes, hours, days, weeks or months.
     '''
-    if seconds < 60 * 2:
+    if str(seconds) == "nan":
+        return "-"
+    elif seconds < 60 * 2:
         return f"{int(round(seconds, 0))} seconds"
     elif seconds < 3600 * 1:
         return f"{int(round(seconds / 60, 0))} minutes"
@@ -104,6 +166,10 @@ def make_text_from_seconds(seconds):
 
 df = None
 log = None
+view_loaded_data_expanded = False
+view_define_columns_expanded = False
+view_process_mining_statistics_expanded = False
+view_process_visualization_expanded = False
 
 st.header("Load data")
 st.text("Choose how to load data for process mining analysis, either from a file or use example data.")
@@ -115,12 +181,14 @@ if select_load_procedure == "Load from file":
     uploaded_file = st.file_uploader("Choose an Excel file, data from first sheet is loaded, if you see 'Network Error', most likely file is opened in Excel, close it.", type="xlsx")
     if uploaded_file is not None:
         try:
-            df = load_file_to_dataframe(uploaded_file)
+            with st.spinner("Loading file..."):
+                df = load_file_to_dataframe(uploaded_file)
             st.success("File loaded successfully!")
         except Exception as e:
             st.error(f"Error loading file: {e}, if it is a network error most likely you have the file open in Excel. Close it.")
 
 if select_load_procedure == "Load example data 1 - Purchase orders":
+    view_process_visualization_expanded = True
     # Load example dataframe
     example_data = {
         'case_id': ["1", "1", "1", "1", "1", 
@@ -139,6 +207,7 @@ if select_load_procedure == "Load example data 1 - Purchase orders":
     df = pd.DataFrame(example_data)
 
 if select_load_procedure == "Load example data 2 - Tablet production":
+    view_process_visualization_expanded = True
     # Load example dataframe
     example_data = {
         'case_id': ["1", "1", "1", 
@@ -170,7 +239,7 @@ if select_load_procedure == "Load example data 2 - Tablet production":
 
 if "df" in locals() and df is not None:
 
-    with st.expander("View loaded data", expanded=False, icon="💾"):
+    with st.expander("View loaded data", expanded=view_loaded_data_expanded, icon="💾"):
         st.subheader("Data table")
 
         if select_load_procedure[10:] == "Load example":
@@ -183,7 +252,7 @@ if "df" in locals() and df is not None:
             st.text("All data is shown below.")
             st.dataframe(df, hide_index=True)
 
-    with st.expander("Define columns with relevant data", expanded=True, icon="🔡"):
+    with st.expander("Define columns with relevant data", expanded=view_define_columns_expanded, icon="🔡"):
         #user can now choose, which column to take for case, activity and timestamp
         st.subheader("Choose columns for case, activity and timestamp")
         column_definition_col1, column_definition_col2, column_definition_col3, column_definition_col4 = st.columns(4)
@@ -193,14 +262,14 @@ if "df" in locals() and df is not None:
             index_case_column = df.columns.get_loc("case_id")
         with column_definition_col1:
             case_column = st.selectbox("Select column for case", df.columns, index=index_case_column)
-            st.text("A case is a sequence of activities that belong together. This column should contain the case identifier.")
+            st.text("A case is a sequence of activities that belong together (e.g., an order number). This column should contain the case identifier.")
 
         index_activity_column = 0
         if "activity" in df.columns:
             index_activity_column = df.columns.get_loc("activity")
         with column_definition_col2:
             activity_column = st.selectbox("Select column for activity", df.columns, index=index_activity_column)
-            st.text("An activity is a step in the process. This column should contain the activity identifier.")
+            st.text("An activity is the specific action or step taken within the process (e.g., order received, order processed). This column should contain the activity identifier.")
 
         index_timestamp_start_column = 0
         if "timestamp" in df.columns:
@@ -254,66 +323,29 @@ if "df" in locals() and df is not None:
             any_warning = True
     #convert dataframe to event log
     if any_warning is False:
-        log = load_event_log_from_dataframe(df, case_column, activity_column, timestamp_start_column, timestamp_end_column)
+        with st.spinner("Converting data to event log..."):
+            log = load_event_log_from_dataframe(df, case_column, activity_column, timestamp_start_column, timestamp_end_column)
 
 
 if log is not None:
 
-    with st.expander("Process Mining Statistics", expanded=False, icon="🧮"):
+    with st.expander("Process Mining Statistics", expanded=view_process_mining_statistics_expanded, icon="🧮"):
         st.header("Process Mining Statistics")
         st.text("This section performs process mining analysis on the uploaded data.")
 
         st.subheader("Basic statistics")
-        #get all case durations and write some basic statistics
-        log_case_durations = pm4py.get_all_case_durations(log)
-        log_case_durations = np.array(log_case_durations)
 
-        log_variants = pm4py.get_variants(log)
-        log_variants = dict(sorted(log_variants.items(), key=lambda item: item[1], reverse=True)) #sort dictionary by value in descending order, to ensure that list_of_variants is in descending order
-        list_of_variants = list(log_variants.keys())
-
+        #######################################
+        log_case_durations, log_variants, list_of_variants, df_kpis, df_variants = calculate_statistics_from_event_log(log)
         st.text(f"""
-                The dataset contains {len(log_case_durations)} cases with an average case duration of {make_text_from_seconds(np.mean(log_case_durations))}.  
-                There are {len(log_variants)} different variants in the dataset.
-                """)
-
-        #create dataframe with main kpis
-        df_kpis = pd.DataFrame(
-            {
-                '# of cases': [len(log_case_durations)],
-                'mean duration': [make_text_from_seconds(np.mean(log_case_durations))],
-                'median duration': [make_text_from_seconds(np.median(log_case_durations))],
-                'minimum duration': [make_text_from_seconds(np.min(log_case_durations))],
-                'maximum duration': [make_text_from_seconds(np.max(log_case_durations))],
-                'stdev duration': [make_text_from_seconds(np.std(log_case_durations))]
-            }
-        )
+            The dataset contains {len(log_case_durations)} cases with an average case duration of {make_text_from_seconds(np.mean(log_case_durations))}.  
+            There are {len(log_variants)} different variants in the dataset.
+            """)
         st.dataframe(df_kpis, hide_index=True)
-
-        #find number of variants
         st.subheader("Variant details")
-
-        #change log variants dictionary, value should be dictionary with '# of cases' as key and old value as value
-        log_variants = {k: {"# of cases": v} for k, v in log_variants.items()}
-
-        #add all the other kpis to the dictionary
-        for variant, kpis in log_variants.items():
-            filtered_log = pm4py.filter_variants(log, [variant])
-            filtered_log_case_durations = pm4py.get_all_case_durations(filtered_log)
-            filtered_log_case_durations = np.array(filtered_log_case_durations)
-            kpis["mean duration"] = make_text_from_seconds(np.mean(filtered_log_case_durations))
-            kpis["median duration"] = make_text_from_seconds(np.median(filtered_log_case_durations))
-            kpis["min duration"] = make_text_from_seconds(np.min(filtered_log_case_durations))
-            kpis["max duration"] = make_text_from_seconds(np.max(filtered_log_case_durations))
-            kpis["stdev duration"] = make_text_from_seconds(np.std(filtered_log_case_durations))
-
-        #create new dict from log_variants, key is joined with ., value is same
-        log_variants_new = {('.'.join(k)): v for k, v in log_variants.items()}
-
-        df_variants = pd.DataFrame.from_dict(log_variants_new, orient='index', columns=['# of cases', 'mean duration', 'median duration', 'min duration', 'max duration', 'stdev duration'])
-        df_variants = df_variants.reset_index().rename(columns={'index': 'variant'})
-        df_variants = df_variants.sort_values(by='# of cases', ascending=False)
         st.dataframe(df_variants, hide_index=True)
+
+        ##############################
 
 
         st.subheader("Start and end activities")
@@ -335,7 +367,7 @@ if log is not None:
             df_end_activities = df_end_activities.sort_values(by='# of cases', ascending=False)
             st.dataframe(df_end_activities, hide_index=True)
 
-    with st.expander("Process Visualization", expanded=False, icon="📊"):
+    with st.expander("Process Visualization", expanded=view_process_visualization_expanded, icon="📊"):
         st.header("Visualizations")
         st.subheader("Variant filter")
         #add selectbox where user can filter a variant
